@@ -96,18 +96,15 @@ def generate_step(window_seconds: int):
 # VISUALIZATION FUNCTIONS
 #############################################
 
-def create_sender_risk_heatmap(df: pd.DataFrame):
+def create_sender_risk_bars(df: pd.DataFrame):
     """
-    Create sender risk heatmap showing temporal patterns and anomaly clustering.
-    X-axis: Time windows (10-second buckets)
-    Y-axis: Top 15 most active senders
-    Color: Anomaly score intensity (green → yellow → red)
-    Shows: When and which senders exhibit high-risk behavior
+    Create horizontal bar chart showing top senders by average anomaly score.
+    Simple, clear visualization identifying problematic senders.
     """
     if df.empty or len(df) < 10:
         fig = go.Figure()
         fig.add_annotation(
-            text="Accumulating data for temporal analysis...<br>Need at least 10 transactions",
+            text="Accumulating data for sender analysis...<br>Need at least 10 transactions",
             xref="paper", yref="paper",
             x=0.5, y=0.5, showarrow=False,
             font=dict(size=14, color="#666666")
@@ -119,122 +116,105 @@ def create_sender_risk_heatmap(df: pd.DataFrame):
         )
         return fig
     
-    # Prepare data
-    df = df.copy()
-    
-    # Calculate elapsed time in seconds from first transaction
-    df['ts'] = pd.to_datetime(df['ts'], utc=True)
-    min_time = df['ts'].min()
-    df['elapsed_seconds'] = (df['ts'] - min_time).dt.total_seconds()
-    
-    # Create time windows (10-second buckets)
-    time_bucket_size = 10  # seconds
-    df['time_window'] = (df['elapsed_seconds'] // time_bucket_size).astype(int)
-    
-    # Get top 15 most active senders
-    sender_counts = df['sender'].value_counts()
-    top_senders = sender_counts.head(15).index.tolist()
-    df_plot = df[df['sender'].isin(top_senders)].copy()
-    
-    if df_plot.empty:
-        fig = go.Figure()
-        fig.add_annotation(
-            text="Building heatmap...",
-            xref="paper", yref="paper",
-            x=0.5, y=0.5, showarrow=False,
-            font=dict(size=14, color="#666666")
-        )
-        fig.update_layout(height=600, template="plotly_white")
-        return fig
-    
-    # Aggregate by sender and time window - calculate mean anomaly score
-    heatmap_data = df_plot.groupby(['sender', 'time_window']).agg({
-        'score': 'mean',
-        'amount': 'sum'
+    # Aggregate by sender
+    sender_stats = df.groupby('sender').agg({
+        'score': ['mean', 'max', 'count'],
+        'amount': ['sum', 'mean']
     }).reset_index()
     
-    # Pivot to create heatmap matrix
-    pivot_scores = heatmap_data.pivot(index='sender', columns='time_window', values='score')
-    pivot_amounts = heatmap_data.pivot(index='sender', columns='time_window', values='amount')
+    sender_stats.columns = ['sender', 'avg_score', 'max_score', 'tx_count', 'total_amount', 'avg_amount']
     
-    # Fill NaN with 0 (no transactions in that window)
-    pivot_scores = pivot_scores.fillna(0)
-    pivot_amounts = pivot_amounts.fillna(0)
+    # Get top 15 by average score
+    top_senders = sender_stats.nlargest(15, 'avg_score')
     
-    # Reindex to include all top senders (even if missing in some windows)
-    pivot_scores = pivot_scores.reindex(top_senders, fill_value=0)
-    pivot_amounts = pivot_amounts.reindex(top_senders, fill_value=0)
+    # Determine color based on average score
+    def get_color(score):
+        if score < 0.3:
+            return '#2ECC71'  # Green - Normal
+        elif score < 0.6:
+            return '#F39C12'  # Yellow - Elevated
+        else:
+            return '#E74C3C'  # Red - High Risk
     
-    # Create hover text with both score and amount
-    hover_text = []
-    for sender_idx, sender in enumerate(pivot_scores.index):
-        hover_row = []
-        for window_idx, window in enumerate(pivot_scores.columns):
-            score = pivot_scores.iloc[sender_idx, window_idx]
-            amount = pivot_amounts.iloc[sender_idx, window_idx]
-            if score > 0:
-                hover_row.append(
-                    f"<b>{sender}</b><br>" +
-                    f"Time: {window*10}-{(window+1)*10}s<br>" +
-                    f"Avg Score: {score:.3f}<br>" +
-                    f"Total Amount: ¥{amount:.2f}"
-                )
-            else:
-                hover_row.append(f"<b>{sender}</b><br>Time: {window*10}-{(window+1)*10}s<br>No activity")
-        hover_text.append(hover_row)
+    top_senders['color'] = top_senders['avg_score'].apply(get_color)
+    top_senders['risk_category'] = top_senders['avg_score'].apply(
+        lambda x: 'Normal' if x < 0.3 else ('Elevated' if x < 0.6 else 'High Risk')
+    )
     
-    # Create heatmap
-    fig = go.Figure(data=go.Heatmap(
-        z=pivot_scores.values,
-        x=[f"{int(w*10)}-{int((w+1)*10)}s" for w in pivot_scores.columns],
-        y=pivot_scores.index.tolist(),
-        colorscale=[
-            [0.0, '#FFFFFF'],   # White for no activity
-            [0.3, '#2ECC71'],   # Green for normal
-            [0.5, '#F39C12'],   # Yellow for elevated
-            [1.0, '#E74C3C']    # Red for high risk
-        ],
-        zmid=0.5,
-        zmin=0,
-        zmax=1,
-        text=hover_text,
-        hovertemplate='%{text}<extra></extra>',
-        colorbar=dict(
-            title=dict(
-                text="Anomaly<br>Score",
-                side="right"
-            ),
-            tickmode="linear",
-            tick0=0,
-            dtick=0.2,
-            thickness=15,
-            len=0.7
-        )
-    ))
+    # Sort by score for better visualization
+    top_senders = top_senders.sort_values('avg_score', ascending=True)
+    
+    # Create horizontal bar chart
+    fig = go.Figure()
+    
+    for category, color in [('High Risk', '#E74C3C'), ('Elevated', '#F39C12'), ('Normal', '#2ECC71')]:
+        cat_data = top_senders[top_senders['risk_category'] == category]
+        if not cat_data.empty:
+            fig.add_trace(go.Bar(
+                y=cat_data['sender'],
+                x=cat_data['avg_score'],
+                orientation='h',
+                name=category,
+                marker=dict(color=color),
+                text=cat_data['avg_score'].round(3),
+                textposition='outside',
+                hovertemplate='<b>%{y}</b><br>' +
+                              'Avg Score: %{x:.3f}<br>' +
+                              'Max Score: %{customdata[0]:.3f}<br>' +
+                              'Transactions: %{customdata[1]}<br>' +
+                              'Total Amount: ¥%{customdata[2]:.2f}<br>' +
+                              '<extra></extra>',
+                customdata=cat_data[['max_score', 'tx_count', 'total_amount']].values
+            ))
+    
+    # Add risk zone backgrounds
+    fig.add_vrect(x0=0, x1=0.3, fillcolor="green", opacity=0.05, line_width=0)
+    fig.add_vrect(x0=0.3, x1=0.6, fillcolor="yellow", opacity=0.05, line_width=0)
+    fig.add_vrect(x0=0.6, x1=1.0, fillcolor="red", opacity=0.05, line_width=0)
+    
+    # Add threshold lines
+    fig.add_vline(x=0.3, line=dict(color='#2ECC71', width=1, dash='dash'), 
+                  annotation_text="Normal", annotation_position="top")
+    fig.add_vline(x=0.6, line=dict(color='#F39C12', width=1, dash='dash'),
+                  annotation_text="Elevated", annotation_position="top")
     
     # Update layout
     fig.update_layout(
         title={
-            'text': 'Sender Risk Heatmap: Temporal Pattern Detection',
+            'text': 'Top 15 Senders by Average Anomaly Score',
             'x': 0.5,
             'xanchor': 'center',
             'font': {'size': 18, 'color': '#2C3E50'}
         },
         height=600,
         template="plotly_white",
+        showlegend=True,
+        barmode='overlay',
         font=dict(family="Arial, sans-serif", size=11),
         xaxis=dict(
-            title='Time Window Since App Started',
-            side='bottom',
-            showgrid=False,
-            tickangle=-45
+            title='Average Anomaly Score',
+            range=[0, 1],
+            showgrid=True,
+            gridwidth=0.5,
+            gridcolor='#e8e8e8',
+            dtick=0.1
         ),
         yaxis=dict(
             title='Sender ID',
-            showgrid=False,
-            autorange='reversed'  # Top sender at top
+            showgrid=False
         ),
-        margin=dict(l=100, r=80, t=80, b=100)
+        legend=dict(
+            title="Risk Category",
+            orientation="v",
+            yanchor="top",
+            y=0.98,
+            xanchor="right",
+            x=0.98,
+            bgcolor='rgba(255, 255, 255, 0.9)',
+            bordercolor='lightgray',
+            borderwidth=1
+        ),
+        margin=dict(l=100, r=100, t=80, b=60)
     )
     
     return fig
@@ -365,7 +345,7 @@ def get_metrics(df: pd.DataFrame, threshold: float):
 # Header
 st.markdown("""
 # TransGuardPlus 🛡️ 
-Real-Time Bank Transaction Anomaly Platform with Heatmap Pattern Detection
+Real-Time Bank Transaction Anomaly Platform with Sender Risk Analysis
 
 **Nippotica Corporation** | Nippofin Business Unit | AI-Powered Surveillance  
 """)
@@ -430,23 +410,25 @@ with st.sidebar:
     
     st.markdown("---")
     
-    # Heatmap Features
-    with st.expander("ℹ️ Sender Risk Heatmap"):
+    # Sender Risk Analysis Features
+    with st.expander("ℹ️ Sender Risk Analysis"):
         st.markdown("""
-        **Heatmap Features:**
-        - **X-axis**: Time windows (10-second intervals)
-        - **Y-axis**: Top 15 most active senders
-        - **Color**: Average anomaly score per window
-        - **White**: No activity
-        - **Green**: Normal behavior
-        - **Yellow**: Elevated risk
-        - **Red**: High risk
+        **Bar Chart Features:**
+        - **Top 15 senders** ranked by average anomaly score
+        - **Horizontal bars** - longer = higher risk
+        - **Color coding**: Green/Yellow/Red by risk category
+        - **Risk zones** - visual background thresholds
         
-        **Key Patterns:**
-        - Vertical red bands: Coordinated attacks
-        - Horizontal red streaks: Persistent attackers
-        - Diagonal patterns: Progressive attacks
-        - Scattered reds: Isolated incidents
+        **Detailed Statistics Table:**
+        - Transaction count and amounts
+        - Score statistics (avg, max, min, std dev)
+        - Risk category classification
+        - Sortable by any column
+        
+        **Use Cases:**
+        - Identify bad actors quickly
+        - Prioritize investigation efforts
+        - Track sender behavior patterns
         """)
     
     # Distribution Features
@@ -469,15 +451,15 @@ with st.sidebar:
     st.markdown("""
     **Enhanced Features:**
     - Real-time anomaly detection (Isolation Forest)
-    - Sender risk heatmap visualization
-    - Temporal coordination pattern detection
-    - Multi-dimensional risk assessment
+    - Breathing dots distribution visualization
+    - Sender risk ranking and analysis
+    - Comprehensive sender statistics
     
     **Technical Stack:**
     - Online Learning with Welford's Algorithm
     - Z-Score normalization per sender
-    - Interactive Plotly heatmaps
-    - 10-second time window aggregation
+    - Interactive Plotly visualizations
+    - Statistical aggregation and ranking
     
     **Contact:** nippofin@nippotica.jp
     """)
@@ -499,7 +481,7 @@ with col4:
     st.metric("Status", status)
 
 # Create tabs for different views
-tab1, tab2 = st.tabs(["📊 Real-Time Monitor", "🔥 Sender Risk Heatmap"])
+tab1, tab2 = st.tabs(["📊 Real-Time Monitor", "👥 Sender Risk Analysis"])
 
 with tab1:
     st.markdown("### Anomaly Score Distribution")
@@ -524,44 +506,61 @@ with tab1:
 
 with tab2:
     st.markdown("""
-    ### Sender Risk Heatmap
+    ### Sender Risk Analysis
     
-    This heatmap reveals temporal patterns and coordination in transaction anomalies.
-    Each cell shows a sender's average risk score during a 10-second time window.
+    Identify the most problematic senders based on their average anomaly scores.
+    This visualization ranks senders by risk level to quickly identify bad actors.
     
-    **Pattern Detection:**
-    - **Red vertical bands**: Coordinated attack (multiple senders at same time)
-    - **Red horizontal streaks**: Persistent attacker (one sender across time)
-    - **Scattered red cells**: Isolated anomalies
-    - **White cells**: No activity in that time window
+    **Risk Categories:**
+    - 🟢 **Green (< 0.3)**: Normal behavior
+    - 🟡 **Yellow (0.3-0.6)**: Elevated risk - monitor closely
+    - 🔴 **Red (> 0.6)**: High risk - investigate immediately
     
-    **Color Scale:**
-    - White: No transactions
-    - Green: Normal (score < 0.3)
-    - Yellow: Elevated risk (0.3-0.6)
-    - Red: High risk (> 0.6)
+    **How to Use:**
+    - Longer bars = higher average risk
+    - Hover over bars for detailed statistics
+    - Check the table below for full transaction breakdown
     """)
     
-    # Sender risk heatmap
-    heatmap_chart = create_sender_risk_heatmap(df)
-    st.plotly_chart(heatmap_chart, use_container_width=True, key="heatmap_chart")
+    # Sender risk bar chart
+    bars_chart = create_sender_risk_bars(df)
+    st.plotly_chart(bars_chart, use_container_width=True, key="bars_chart")
     
-    # Summary statistics for top senders
+    # Detailed sender statistics table
     if not df.empty:
-        st.markdown("### Top Sender Statistics")
-        sender_stats = df.groupby('sender').agg({
-            'amount': ['count', 'sum', 'mean'],
-            'score': ['mean', 'max']
-        }).round(2)
-        sender_stats.columns = ['Tx Count', 'Total Amount', 'Avg Amount', 'Avg Score', 'Max Score']
-        sender_stats = sender_stats.sort_values('Tx Count', ascending=False).head(15)
-        st.dataframe(sender_stats, use_container_width=True)
+        st.markdown("### 📋 Detailed Sender Statistics")
+        
+        sender_details = df.groupby('sender').agg({
+            'amount': ['count', 'sum', 'mean', 'min', 'max'],
+            'score': ['mean', 'max', 'min', 'std']
+        }).round(3)
+        
+        sender_details.columns = [
+            'Tx Count', 'Total Amount', 'Avg Amount', 'Min Amount', 'Max Amount',
+            'Avg Score', 'Max Score', 'Min Score', 'Score StdDev'
+        ]
+        
+        # Sort by average score descending
+        sender_details = sender_details.sort_values('Avg Score', ascending=False)
+        
+        # Add risk category
+        sender_details['Risk Category'] = sender_details['Avg Score'].apply(
+            lambda x: '🔴 High Risk' if x >= 0.6 else ('🟡 Elevated' if x >= 0.3 else '🟢 Normal')
+        )
+        
+        # Reorder columns to put risk category first
+        cols = ['Risk Category'] + [col for col in sender_details.columns if col != 'Risk Category']
+        sender_details = sender_details[cols]
+        
+        st.dataframe(sender_details, use_container_width=True)
+        st.caption(f"Showing statistics for all {len(sender_details)} senders in current time window")
+
 
 # Footer
 st.markdown("""
 ---
 **TransGuardPlus v2.0** | Nippotica Corporation | Nippofin Business Unit | 
-Powered by Isolation Forest ML + Sender Risk Heatmap Analysis
+Powered by Isolation Forest ML + Sender Risk Analysis
 """)
 
 #############################################
