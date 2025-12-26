@@ -200,8 +200,10 @@ def create_sender_risk_heatmap(df: pd.DataFrame):
         text=hover_text,
         hovertemplate='%{text}<extra></extra>',
         colorbar=dict(
-            title="Anomaly<br>Score",
-            titleside="right",
+            title=dict(
+                text="Anomaly<br>Score",
+                side="right"
+            ),
             tickmode="linear",
             tick0=0,
             dtick=0.2,
