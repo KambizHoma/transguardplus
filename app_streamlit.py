@@ -504,6 +504,11 @@ with tab1:
     else:
         st.info("No transactions yet. Click 'Step Once' or 'Start Stream' to generate data.")
 
+    
+    # Sender risk bar chart
+    bars_chart = create_sender_risk_bars(df)
+    st.plotly_chart(bars_chart, use_container_width=True, key="bars_chart")
+ 
 with tab2:
     st.markdown("""
     ### Sender Risk Analysis
@@ -521,10 +526,6 @@ with tab2:
     - Hover over bars for detailed statistics
     - Check the table below for full transaction breakdown
     """)
-    
-    # Sender risk bar chart
-    bars_chart = create_sender_risk_bars(df)
-    st.plotly_chart(bars_chart, use_container_width=True, key="bars_chart")
     
     # Detailed sender statistics table
     if not df.empty:
