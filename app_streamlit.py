@@ -169,14 +169,27 @@ def create_animated_sender_timeline(df: pd.DataFrame):
     # Scale transaction amounts for bubble size (log scale for better visibility)
     df_plot['size'] = np.log1p(df_plot['amount']) * 3 + 5  # Min size 5, scaled by log
     
-    # Create animated scatter plot
+    # For cumulative animation, we need to prepare data differently
+    # Create a cumulative dataset for each time bucket
+    time_buckets = sorted(df_plot['time_bucket'].unique())
+    
+    # Prepare cumulative data for each time bucket
+    cumulative_data = []
+    for bucket in time_buckets:
+        bucket_df = df_plot[df_plot['time_bucket'] <= bucket].copy()
+        bucket_df['animation_frame'] = bucket
+        cumulative_data.append(bucket_df)
+    
+    df_animated = pd.concat(cumulative_data, ignore_index=True)
+    
+    # Create animated scatter plot with cumulative data
     fig = px.scatter(
-        df_plot,
+        df_animated,
         x='elapsed_seconds',
         y='sender_y',
         size='size',
         color='risk_category',
-        animation_frame='time_bucket',
+        animation_frame='animation_frame',
         hover_name='sender',
         hover_data={
             'elapsed_seconds': ':.1f',
@@ -185,6 +198,7 @@ def create_animated_sender_timeline(df: pd.DataFrame):
             'receiver': True,
             'risk_category': True,
             'sender_y': False,
+            'animation_frame': False,
             'time_bucket': False,
             'size': False,
             'color': False
@@ -295,36 +309,6 @@ def create_animated_sender_timeline(df: pd.DataFrame):
             'x': 0.05
         }]
     )
-    
-    # Make animation cumulative (show all transactions up to current frame)
-    for frame in fig.frames:
-        frame_time = float(frame.name)
-        frame_data = df_plot[df_plot['time_bucket'] <= frame_time]
-        
-        # Update frame data to show cumulative transactions
-        frame.data = []
-        for risk_cat in ['Normal', 'Elevated', 'High Risk']:
-            cat_data = frame_data[frame_data['risk_category'] == risk_cat]
-            if not cat_data.empty:
-                frame.data.append(go.Scatter(
-                    x=cat_data['elapsed_seconds'],
-                    y=cat_data['sender_y'],
-                    mode='markers',
-                    marker=dict(
-                        size=cat_data['size'],
-                        color={'Normal': '#2ECC71', 'Elevated': '#F39C12', 'High Risk': '#E74C3C'}[risk_cat],
-                        opacity=0.7,
-                        line=dict(width=0.5, color='white')
-                    ),
-                    name=risk_cat,
-                    showlegend=False,
-                    hovertemplate='<b>%{customdata[0]}</b><br>' +
-                                  'Time: %{x:.1f}s<br>' +
-                                  'Amount: ¥%{customdata[1]:.2f}<br>' +
-                                  'Score: %{customdata[2]:.3f}<br>' +
-                                  'Receiver: %{customdata[3]}<extra></extra>',
-                    customdata=cat_data[['sender', 'amount', 'score', 'receiver']].values
-                ))
     
     return fig
 
