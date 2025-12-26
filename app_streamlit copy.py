@@ -96,13 +96,14 @@ def generate_step(window_seconds: int):
 # VISUALIZATION FUNCTIONS
 #############################################
 
-def create_animated_sender_timeline(df: pd.DataFrame):
+def create_animated_bubble_chart(df: pd.DataFrame):
     """
-    Create animated sender risk timeline showing temporal clustering and coordination.
-    X-axis: Elapsed time since app started (seconds)
-    Y-axis: Sender IDs (top 15 most active)
-    Dots: Individual transactions colored by anomaly score, sized by amount
-    Animation: Cumulative reveal with playhead moving left-to-right
+    Create animated bubble chart showing temporal clustering of anomalies.
+    X-axis: Transaction amount (log scale)
+    Y-axis: Sender anomaly score
+    Size: Total volume per sender
+    Color: Risk gradient (green/yellow/red)
+    Animation: Hour progression
     """
     if df.empty or len(df) < 10:
         fig = go.Figure()
@@ -115,27 +116,17 @@ def create_animated_sender_timeline(df: pd.DataFrame):
         fig.update_layout(
             height=600,
             template="plotly_white",
-            margin=dict(l=120, r=40, t=60, b=60)
+            margin=dict(l=60, r=40, t=60, b=60)
         )
         return fig
     
-    # Prepare data
-    df = df.copy()
+    # Create hourly aggregation
+    agg_df = create_hourly_aggregation(df)
     
-    # Calculate elapsed time in seconds from first transaction
-    df['ts'] = pd.to_datetime(df['ts'], utc=True)
-    min_time = df['ts'].min()
-    df['elapsed_seconds'] = (df['ts'] - min_time).dt.total_seconds()
-    
-    # Get top 15 most active senders
-    sender_counts = df['sender'].value_counts()
-    top_senders = sender_counts.head(15).index.tolist()
-    df_plot = df[df['sender'].isin(top_senders)].copy()
-    
-    if df_plot.empty:
+    if agg_df.empty:
         fig = go.Figure()
         fig.add_annotation(
-            text="Building sender timeline...",
+            text="Processing hourly aggregations...",
             xref="paper", yref="paper",
             x=0.5, y=0.5, showarrow=False,
             font=dict(size=14, color="#666666")
@@ -143,16 +134,7 @@ def create_animated_sender_timeline(df: pd.DataFrame):
         fig.update_layout(height=600, template="plotly_white")
         return fig
     
-    # Create time buckets for animation (10-second intervals)
-    max_elapsed = df_plot['elapsed_seconds'].max()
-    time_bucket_size = 10  # seconds
-    df_plot['time_bucket'] = (df_plot['elapsed_seconds'] // time_bucket_size) * time_bucket_size
-    
-    # Assign numeric Y positions to senders (for better control)
-    sender_to_y = {sender: idx for idx, sender in enumerate(reversed(top_senders))}
-    df_plot['sender_y'] = df_plot['sender'].map(sender_to_y)
-    
-    # Determine color based on anomaly score
+    # Determine color based on risk score
     def get_color(score):
         if score < 0.3:
             return '#2ECC71'  # Green - Normal
@@ -161,33 +143,27 @@ def create_animated_sender_timeline(df: pd.DataFrame):
         else:
             return '#E74C3C'  # Red - High Risk
     
-    df_plot['color'] = df_plot['score'].apply(get_color)
-    df_plot['risk_category'] = df_plot['score'].apply(
+    agg_df['color'] = agg_df['mean_score'].apply(get_color)
+    agg_df['risk_category'] = agg_df['mean_score'].apply(
         lambda x: 'Normal' if x < 0.3 else ('Elevated' if x < 0.6 else 'High Risk')
     )
     
-    # Scale transaction amounts for bubble size (log scale for better visibility)
-    df_plot['size'] = np.log1p(df_plot['amount']) * 3 + 5  # Min size 5, scaled by log
-    
-    # Create animated scatter plot
+    # Create figure with animation
     fig = px.scatter(
-        df_plot,
-        x='elapsed_seconds',
-        y='sender_y',
-        size='size',
+        agg_df,
+        x='mean_amount',
+        y='mean_score',
+        size='total_amount',
         color='risk_category',
-        animation_frame='time_bucket',
+        animation_frame='hour',
         hover_name='sender',
         hover_data={
-            'elapsed_seconds': ':.1f',
-            'amount': ':.2f',
-            'score': ':.3f',
-            'receiver': True,
+            'mean_amount': ':.2f',
+            'mean_score': ':.3f',
+            'total_amount': ':.2f',
+            'tx_count': True,
             'risk_category': True,
-            'sender_y': False,
-            'time_bucket': False,
-            'size': False,
-            'color': False
+            'hour': True
         },
         color_discrete_map={
             'Normal': '#2ECC71',
@@ -195,21 +171,24 @@ def create_animated_sender_timeline(df: pd.DataFrame):
             'High Risk': '#E74C3C'
         },
         labels={
-            'elapsed_seconds': 'Elapsed Time (seconds)',
-            'sender_y': 'Sender',
-            'amount': 'Amount (¥)',
-            'score': 'Anomaly Score',
-            'receiver': 'Receiver'
+            'mean_amount': 'Avg Transaction Amount (¥)',
+            'mean_score': 'Anomaly Score',
+            'total_amount': 'Total Volume (¥)',
+            'tx_count': 'Transaction Count',
+            'hour': 'Hour of Day'
         },
-        size_max=30,
-        range_x=[0, max(max_elapsed + 10, 60)],
-        range_y=[-0.5, len(top_senders) - 0.5]
+        size_max=60,
+        range_y=[0, 1]
     )
+    
+    # Calculate reasonable X-axis range
+    min_amt = agg_df['mean_amount'].min()
+    max_amt = agg_df['mean_amount'].max()
     
     # Update layout
     fig.update_layout(
         title={
-            'text': 'Sender Risk Timeline: Temporal Coordination Detection',
+            'text': 'Temporal Pattern Analysis: Anomaly Clustering by Hour',
             'x': 0.5,
             'xanchor': 'center',
             'font': {'size': 18, 'color': '#2C3E50'}
@@ -218,21 +197,22 @@ def create_animated_sender_timeline(df: pd.DataFrame):
         template="plotly_white",
         showlegend=True,
         hovermode='closest',
-        font=dict(family="Arial, sans-serif", size=11),
+        font=dict(family="Arial, sans-serif", size=12),
         xaxis=dict(
+            type='log',
             showgrid=True,
             gridwidth=0.5,
             gridcolor='#e8e8e8',
-            title='Elapsed Time Since App Started (seconds)'
+            range=[np.log10(max(0.1, min_amt * 0.5)), np.log10(max_amt * 2)],
+            tickformat='.0f',
+            title='Avg Transaction Amount (¥)'
         ),
         yaxis=dict(
             showgrid=True,
             gridwidth=0.5,
             gridcolor='#e8e8e8',
-            tickmode='array',
-            tickvals=list(range(len(top_senders))),
-            ticktext=list(reversed(top_senders)),
-            title='Sender ID'
+            dtick=0.2,
+            title='Anomaly Score'
         ),
         legend=dict(
             title="Risk Category",
@@ -245,10 +225,15 @@ def create_animated_sender_timeline(df: pd.DataFrame):
             bordercolor='lightgray',
             borderwidth=1
         ),
-        margin=dict(l=120, r=40, t=80, b=60)
+        margin=dict(l=60, r=40, t=80, b=60)
     )
     
-    # Animation settings - 0.8 seconds per frame, cumulative
+    # Add risk zone backgrounds
+    fig.add_hrect(y0=0, y1=0.3, fillcolor="green", opacity=0.05, line_width=0)
+    fig.add_hrect(y0=0.3, y1=0.6, fillcolor="yellow", opacity=0.05, line_width=0)
+    fig.add_hrect(y0=0.6, y1=1.0, fillcolor="red", opacity=0.05, line_width=0)
+    
+    # Animation settings
     fig.update_layout(
         updatemenus=[{
             'type': 'buttons',
@@ -261,11 +246,11 @@ def create_animated_sender_timeline(df: pd.DataFrame):
                         'frame': {'duration': 800, 'redraw': True},
                         'fromcurrent': True,
                         'mode': 'immediate',
-                        'transition': {'duration': 300, 'easing': 'linear'}
+                        'transition': {'duration': 400, 'easing': 'cubic-in-out'}
                     }]
                 },
                 {
-                    'label': '⏸ Pause',
+                    'label': '❚❚ Pause',
                     'method': 'animate',
                     'args': [[None], {
                         'frame': {'duration': 0, 'redraw': False},
@@ -274,57 +259,12 @@ def create_animated_sender_timeline(df: pd.DataFrame):
                     }]
                 }
             ],
-            'x': 0.05,
-            'y': 1.12,
+            'x': 0.1,
+            'y': 1.15,
             'xanchor': 'left',
             'yanchor': 'top'
-        }],
-        sliders=[{
-            'active': 0,
-            'yanchor': 'top',
-            'y': -0.1,
-            'xanchor': 'left',
-            'currentvalue': {
-                'prefix': 'Time: ',
-                'visible': True,
-                'xanchor': 'right',
-                'suffix': 's'
-            },
-            'pad': {'b': 10, 't': 50},
-            'len': 0.9,
-            'x': 0.05
         }]
     )
-    
-    # Make animation cumulative (show all transactions up to current frame)
-    for frame in fig.frames:
-        frame_time = float(frame.name)
-        frame_data = df_plot[df_plot['time_bucket'] <= frame_time]
-        
-        # Update frame data to show cumulative transactions
-        frame.data = []
-        for risk_cat in ['Normal', 'Elevated', 'High Risk']:
-            cat_data = frame_data[frame_data['risk_category'] == risk_cat]
-            if not cat_data.empty:
-                frame.data.append(go.Scatter(
-                    x=cat_data['elapsed_seconds'],
-                    y=cat_data['sender_y'],
-                    mode='markers',
-                    marker=dict(
-                        size=cat_data['size'],
-                        color={'Normal': '#2ECC71', 'Elevated': '#F39C12', 'High Risk': '#E74C3C'}[risk_cat],
-                        opacity=0.7,
-                        line=dict(width=0.5, color='white')
-                    ),
-                    name=risk_cat,
-                    showlegend=False,
-                    hovertemplate='<b>%{customdata[0]}</b><br>' +
-                                  'Time: %{x:.1f}s<br>' +
-                                  'Amount: ¥%{customdata[1]:.2f}<br>' +
-                                  'Score: %{customdata[2]:.3f}<br>' +
-                                  'Receiver: %{customdata[3]}<extra></extra>',
-                    customdata=cat_data[['sender', 'amount', 'score', 'receiver']].values
-                ))
     
     return fig
 
@@ -454,7 +394,7 @@ def get_metrics(df: pd.DataFrame, threshold: float):
 # Header
 st.markdown("""
 # TransGuardPlus 🛡️ 
-Real-Time Bank Transaction Anomaly Platform with Sender Coordination Detection
+Advanced Real-Time Bank Transaction Anomaly Platform with Temporal Pattern Analysis
 
 **Nippotica Corporation** | Nippofin Business Unit | AI-Powered Surveillance  
 """)
@@ -520,20 +460,20 @@ with st.sidebar:
     st.markdown("---")
     
     # Temporal Analysis Features
-    with st.expander("ℹ️ Sender Risk Timeline"):
+    with st.expander("ℹ️ Temporal Pattern Analysis"):
         st.markdown("""
-        **Animated Timeline Features:**
-        - **X-axis**: Elapsed time since app started (seconds)
-        - **Y-axis**: Top 15 most active senders
-        - **Dot Color**: Risk category (Green/Yellow/Red)
-        - **Dot Size**: Transaction amount
-        - **Animation**: Cumulative reveal (0.8s per frame)
+        **Animated Bubble Chart Features:**
+        - **X-axis**: Average transaction amount (log scale, ¥)
+        - **Y-axis**: Anomaly score (0.0 to 1.0)
+        - **Bubble Size**: Total transaction volume per sender
+        - **Color**: Risk category (Green/Yellow/Red)
+        - **Animation**: Hour-by-hour progression
         
-        **Key Patterns to Watch:**
-        - Horizontal red lines: Persistent attacker
-        - Vertical red clusters: Coordinated attack
-        - Burst patterns: Sudden fraud attempts
-        - Timeline evolution: Risk progression over session
+        **Key Insights:**
+        - Detect temporal clustering of anomalies
+        - Track sender behavior evolution over time
+        - Identify coordinated fraud patterns
+        - Visualize amount-risk correlations
         """)
     
     # Distribution Features
@@ -556,15 +496,14 @@ with st.sidebar:
     st.markdown("""
     **Enhanced Features:**
     - Real-time anomaly detection (Isolation Forest)
-    - Animated sender risk timeline
-    - Temporal coordination pattern detection
+    - Temporal pattern analysis with animated visualization
+    - Hourly sender aggregation for clustering detection
     - Multi-dimensional risk assessment
     
     **Technical Stack:**
     - Online Learning with Welford's Algorithm
     - Z-Score normalization per sender
     - Interactive Plotly animations
-    - Cumulative timeline reveal (0.8s frames)
     
     **Contact:** nippofin@nippotica.jp
     """)
@@ -586,7 +525,7 @@ with col4:
     st.metric("Status", status)
 
 # Create tabs for different views
-tab1, tab2 = st.tabs(["📊 Real-Time Monitor", "⏱️ Sender Risk Timeline"])
+tab1, tab2 = st.tabs(["📊 Real-Time Monitor", "🔄 Temporal Pattern Analysis"])
 
 with tab1:
     st.markdown("### Anomaly Score Distribution")
@@ -611,42 +550,37 @@ with tab1:
 
 with tab2:
     st.markdown("""
-    ### Sender Risk Timeline
+    ### Temporal Pattern Analysis
     
-    This animated timeline reveals temporal coordination patterns in transaction anomalies.
-    Each horizontal lane represents a sender. Watch for patterns:
-    
-    - **Horizontal red clusters**: One sender attacking repeatedly
-    - **Vertical red clusters**: Multiple senders coordinating attacks at same time
-    - **Burst patterns**: Sudden appearance of many transactions
+    This animated bubble chart reveals how transaction anomalies cluster over time. 
+    Each bubble represents a sender's aggregated behavior for that hour.
     
     **How to use:**
-    - Press **▶ Play** to watch the timeline unfold from app start
-    - **⏸ Pause** to freeze at any moment
-    - **Drag the slider** to jump to specific time points
-    - **Hover over dots** to see transaction details
+    - Press ▶ Play to watch hour-by-hour evolution
+    - Larger bubbles indicate higher transaction volumes
+    - Vertical position shows risk level
+    - Observe if anomalies appear in coordinated bursts
     """)
     
-    # Animated sender timeline
-    timeline_chart = create_animated_sender_timeline(df)
-    st.plotly_chart(timeline_chart, use_container_width=True, key="timeline_chart")
+    # Animated bubble chart
+    bubble_chart = create_animated_bubble_chart(df)
+    st.plotly_chart(bubble_chart, use_container_width=True, key="bubble_chart")
     
-    # Summary statistics for top senders
+    # Summary statistics by hour
     if not df.empty:
-        st.markdown("### Top Sender Statistics")
-        sender_stats = df.groupby('sender').agg({
+        st.markdown("### Hourly Statistics")
+        hourly_stats = df.groupby('hour').agg({
             'amount': ['count', 'sum', 'mean'],
             'score': ['mean', 'max']
         }).round(2)
-        sender_stats.columns = ['Tx Count', 'Total Amount', 'Avg Amount', 'Avg Score', 'Max Score']
-        sender_stats = sender_stats.sort_values('Tx Count', ascending=False).head(15)
-        st.dataframe(sender_stats, use_container_width=True)
+        hourly_stats.columns = ['Tx Count', 'Total Amount', 'Avg Amount', 'Avg Score', 'Max Score']
+        st.dataframe(hourly_stats, use_container_width=True)
 
 # Footer
 st.markdown("""
 ---
 **TransGuardPlus v2.0** | Nippotica Corporation | Nippofin Business Unit | 
-Powered by Isolation Forest ML + Sender Risk Timeline Analysis
+Powered by Isolation Forest ML + Temporal Pattern Analysis
 """)
 
 #############################################
