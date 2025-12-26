@@ -178,9 +178,12 @@ def create_animated_bubble_chart(df: pd.DataFrame):
             'hour': 'Hour of Day'
         },
         size_max=60,
-        range_y=[0, 1],
-        range_x=[agg_df['mean_amount'].min() * 0.5, agg_df['mean_amount'].max() * 1.5]
+        range_y=[0, 1]
     )
+    
+    # Calculate reasonable X-axis range
+    min_amt = agg_df['mean_amount'].min()
+    max_amt = agg_df['mean_amount'].max()
     
     # Update layout
     fig.update_layout(
@@ -199,13 +202,17 @@ def create_animated_bubble_chart(df: pd.DataFrame):
             type='log',
             showgrid=True,
             gridwidth=0.5,
-            gridcolor='#e8e8e8'
+            gridcolor='#e8e8e8',
+            range=[np.log10(max(0.1, min_amt * 0.5)), np.log10(max_amt * 2)],
+            tickformat='.0f',
+            title='Avg Transaction Amount (¥)'
         ),
         yaxis=dict(
             showgrid=True,
             gridwidth=0.5,
             gridcolor='#e8e8e8',
-            dtick=0.2
+            dtick=0.2,
+            title='Anomaly Score'
         ),
         legend=dict(
             title="Risk Category",
